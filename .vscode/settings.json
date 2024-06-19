@@ -1,5 +1,11 @@
 {
     "files.associations": {
-        "types.h": "c"
+        "types.h": "c",
+        "mqueue.h": "c",
+        "mman.h": "c",
+        "stdlib.h": "c",
+        "signal.h": "c",
+        "pthread.h": "c",
+        "semaphore.h": "c"
     }
 }
