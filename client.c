@@ -1,6 +1,7 @@
 #include "commons.h"
 
 void termSignalHandler(int signal);
+void fullServerSignalHandler(int signal);
 void registerWithMaster(void);
 void getNumber(void);
 void sendInfoMessage(void);
@@ -16,10 +17,12 @@ pthread_mutex_t mutex;
 pthread_cond_t cond;
 messageCount clients[MAX_CLIENTS];
 sem_t *semaphore;
+struct sigaction sa;
 int fd;
 bool ready = false;
 int shm_fd;
 void *shmPtr;
+bool serverFull = false;
 
 int main() 
 {
@@ -38,8 +41,13 @@ int main()
     }
 
     // Register signal SIGTERM
-    signal(SIGTERM, termSignalHandler);
-    signal(SIGUSR1, sigusr1Handler);
+    signal(SIGTERM, termSignalHandler); // this signal is run only once so can use simpler signal() instead of sigaction()
+    // Register signal SIGUSR1
+    sa.sa_handler = sigusr1Handler;
+    sigaction(SIGUSR1, &sa, NULL); // signal() would need to be reinitialised every time due to System V based implementation in Linux, sigaction doesn't
+    // Register signal SIGUSR2
+    signal(SIGUSR2, fullServerSignalHandler);
+    
     
     pid = getpid();
     getNumber();
@@ -149,27 +157,30 @@ void sendInfoMessage(void)
     } else {
         printf("Shared memory pointer is NULL\n");
     }
+    ready = false;
     sem_post(semaphore);
 
     printClients();
-    ready = false;
     pthread_mutex_unlock(&mutex);
 }
 
 void performExit(void)
 {
-    fd = open(FIFO_PATH, O_WRONLY);
-    if (fd == -1)
+    if(!serverFull) // no need to unregister if server is full
     {
-        perror("unable to open the FIFO");
-        exit(-1);
+        fd = open(FIFO_PATH, O_WRONLY);
+        if (fd == -1)
+        {
+            perror("unable to open the FIFO");
+            exit(-1);
+        }
+        write(fd, &number, sizeof(int8_t));
+        close(fd);
     }
     printf("Exiting\n");
-    write(fd, &number, sizeof(int8_t));
     pthread_mutex_destroy(&mutex);
     pthread_cond_destroy(&cond);
     mq_close(mq);
-    close(fd);
     munmap(shmPtr, MAX_CLIENTS * sizeof(messageCount));
 }
 
@@ -188,7 +199,14 @@ void printClients(void)
     {
         if(clients[i].c.number != 0)
         {
-            printf("Client %d has received %d messages and sent %d messages\n", clients[i].c.number, clients[i].msgReceived, clients[i].msgSent);
+            printf("Client %d: server received %d messages and sent %d messages\n", clients[i].c.number, clients[i].msgReceived, clients[i].msgSent);
         }
     }
+}
+
+void fullServerSignalHandler(int signal)
+{
+    printf("Server is full\n");
+    serverFull = true;
+    exit(1);
 }

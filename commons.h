@@ -17,7 +17,7 @@
 #include <unistd.h>
 #include <signal.h>
 
-#define MAX_CLIENTS 10
+#define MAX_CLIENTS 3
 #define FIFO_PATH "/tmp/fifo"
 #define QUEUE_NAME "/queue"
 #define SHM_NAME "/shm_name"

@@ -10,6 +10,9 @@ void unregisterClient(int8_t number);
 void exitFunc(void);
 void sendData(pid_t requester);
 void sigusr1Handler(int signo, siginfo_t *si, void *data);
+int8_t getNumFromPid(pid_t pid);
+int getIndexFromNumber(int8_t number);
+int getIndexFromPid(pid_t pid);
 
 messageCount clients[MAX_CLIENTS];
 int8_t clientsCount = 0;
@@ -58,27 +61,24 @@ int main()
     }
 
     int8_t clientNumber;
+    int index;
     bool found;
     usleep(100000); // To make sure threads start before next message
     while(1)
     {
-        found = false;
-        printf("Enter the client number:\n");
+        clientNumber = 0;
+        printf("Enter the client number or \"-2\" to exit:\n");
         scanf("%d", (int*)&clientNumber);
-        for(int i = 0; i < clientsCount; i++)
+        if (clientNumber == -2) exit(0);
+        if (clientNumber == 0) continue; // 0 is not allowed as number, for some reason signal handler causes scanf to run forward, so to avoid empty input
+        index = getIndexFromNumber(clientNumber);
+        if (index == -1)
         {
-            if(clients[i].c.number == clientNumber)
-            {
-                found = true;
-                printf("Closing the client %d\n", clientNumber);
-                kill(clients[i].c.pid, SIGTERM);
-                break;
-            }
-            if (!found)
-            {
-                printf("Client %d not found\n", clientNumber);
-            }
+            printf("Client %d not found\n", clientNumber);
+            continue;
         }
+        printf("Closing the client %d\n", clientNumber);
+        kill(clients[index].c.pid, SIGTERM);
     }
 
     return 0;
@@ -102,49 +102,50 @@ void* registerThreadFunc(void* arg)
     }
 
     while (1) {
+        tmp = malloc(sizeof(client));
+        printf("Waiting for the clients to register, currently %d registered\n", clientsCount);
+        if (mq_receive(mq, (char *)tmp, sizeof(client), NULL) == -1)
+        {
+            perror("unable to receive the message");
+            exit(-1);
+        }
         if (clientsCount < MAX_CLIENTS)
         {
-            tmp = malloc(sizeof(client));
-            printf("Waiting for the clients to register, currently %d registered\n", clientsCount);
-            if (mq_receive(mq, (char*)tmp, sizeof(client), NULL) == -1) 
-            {
-                perror("unable to receive the message");
-                exit(-1);
-            }
             clients[clientsCount].c.number = tmp->number;
             clients[clientsCount].c.pid = tmp->pid;
+            clients[clientsCount].msgReceived = 1;
             clientsCount++;
             printf("Client registered with number %d, pid: %d\n", tmp->number, tmp->pid);
         }
         else 
         {
             printf("The server is full\n");
+            kill(tmp->pid, SIGUSR2); // Send SIGUSR2 to the client that cannot register
         }
     }
 }
 
 void unregisterClient(int8_t number)
 {
-    int i,j;
-    for (i = 0; i < clientsCount; i++)
+    int j, index = getIndexFromNumber(number);
+    if (index == -1)
     {
-        if (clients[i].c.number == number)
-        {
-            clientsCount--;
-            for(j = i; j < clientsCount - 1; j++)
-            {
-                clients[j].c.number = clients[j+1].c.number;
-                clients[j].c.pid = clients[j+1].c.pid;
-                clients[j].msgReceived = clients[j+1].msgReceived;
-                clients[j].msgSent = clients[j+1].msgSent;
-            }
-            clients[clientsCount].c.number = 0;
-            clients[clientsCount].c.pid = 0;
-            clients[clientsCount].msgReceived = 0;
-            clients[clientsCount].msgSent = 0;
-            break;
-        }
+        printf("Client %d not found\n", number);
+        return;
     }
+
+    clientsCount--;
+    for (j = index; j < clientsCount; j++)
+    {
+        clients[j].c.number = clients[j + 1].c.number;
+        clients[j].c.pid = clients[j + 1].c.pid;
+        clients[j].msgReceived = clients[j + 1].msgReceived;
+        clients[j].msgSent = clients[j + 1].msgSent;
+    }
+    clients[clientsCount].c.number = 0;
+    clients[clientsCount].c.pid = 0;
+    clients[clientsCount].msgReceived = 0;
+    clients[clientsCount].msgSent = 0;
 }
 
 void* fifoThreadFunc(void* arg)
@@ -214,6 +215,10 @@ void* fifoThreadFunc(void* arg)
 
 void exitFunc(void)
 {
+    for(int i = 0; i < clientsCount; i++)
+    {
+        kill(clients[i].c.pid, SIGTERM);
+    }
     int i;
     mq_unlink(QUEUE_NAME);
     unlink(FIFO_PATH);
@@ -247,16 +252,56 @@ void* sendDataThreadFunc(void* arg)
         }
         signaled = false;
         sendData(requesterPid);
+        clients[getIndexFromPid(requesterPid)].msgSent++;
         pthread_mutex_unlock(&mutex);
     }
 }
 
 void sigusr1Handler(int signo, siginfo_t *si, void *data)
 {
+    int index;
     pthread_mutex_lock(&mutex);
     signaled = true;
     requesterPid = si->si_pid;
-    printf("Data requested by %d\n", requesterPid);
+    index = getIndexFromPid(requesterPid);
+    printf("Data requested by %d\n", clients[index].c.number);
+    clients[index].msgReceived++;
     pthread_cond_signal(&cond);
     pthread_mutex_unlock(&mutex);
+}
+
+int8_t getNumFromPid(pid_t pid)
+{
+    for (int i = 0; i < clientsCount; i++)
+    {
+        if (clients[i].c.pid == pid)
+        {
+            return clients[i].c.number;
+        }
+    }
+    return -1;
+}
+
+int getIndexFromNumber(int8_t number)
+{
+    for (int i = 0; i < clientsCount; i++)
+    {
+        if (clients[i].c.number == number)
+        {
+            return i;
+        }
+    }
+    return -1;
+}
+
+int getIndexFromPid(pid_t pid)
+{
+    for (int i = 0; i < clientsCount; i++)
+    {
+        if (clients[i].c.pid == pid)
+        {
+            return i;
+        }
+    }
+    return -1;
 }
