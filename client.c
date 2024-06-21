@@ -1,38 +1,42 @@
 #include "commons.h"
 
-void termSignalHandler(int signal);
-void fullServerSignalHandler(int signal);
-void registerWithMaster(void);
-void getNumber(void);
-void sendInfoMessage(void);
-void performExit(void);
-void sigusr1Handler(int signal);
-void printClients(void);
+void termSignalHandler(int signal); // signal handler for SIGTERM
+void sigusr1Handler(int signal); // signal handler for SIGUSR1
+void fullServerSignalHandler(int signal); // signal handler for SIGUSR2
+void registerWithServer(void); // register client with server
+void getNumber(void); // get number from user
+void sendInfoMessage(void); // send message to server requesting info
+void performExit(void); // function to perform exit actions
+void printClients(void); // print clients info
 
-int8_t number = -1;
-pid_t pid;
-pid_t serverPid;
-mqd_t mq;
-pthread_mutex_t mutex;
-pthread_cond_t cond;
-messageCount clients[MAX_CLIENTS];
-sem_t *semaphore;
-struct sigaction sa;
-int fd;
-bool ready = false;
-int shm_fd;
-void *shmPtr;
-bool serverFull = false;
+int8_t number = -1; // client number/designator, assigned by user at startup, must be positive and >0, 0 not allowed
+pid_t pid; // client pid
+pid_t serverPid; // server pid
+mqd_t mq; // message queue
+pthread_mutex_t mutex; // mutex for synchronisation
+pthread_cond_t cond; // condition variable for synchronisation
+bool ready = false; // flag for condition variable
+sem_t *semaphore; // semaphore for synchronisation
+struct sigaction sa; // struct for signal handling
+int fd; // file descriptor for FIFO
+int shm_fd; // shared memory file descriptor
+void *shmPtr; // shared memory pointer
+messageCount clients[MAX_CLIENTS]; // array of clients for info received from server
+bool serverFull = false; // flag for server full
 
 int main() 
 {
-    if (atexit(performExit) != 0) {
-        fprintf(stderr, "Cannot set exit function\n");
+    // Register exit function
+    if (atexit(performExit) != 0) 
+    { 
+        perror("Cannot set exit function\n");
         return 1;
     }
+    // Initialise mutex and condition variable
     pthread_mutex_init(&mutex, NULL);
     pthread_cond_init(&cond, NULL);
 
+    // Create semaphore
     semaphore = sem_open(SEM_NAME, 0);
     if (semaphore == SEM_FAILED)
     {
@@ -46,49 +50,56 @@ int main()
     sa.sa_handler = sigusr1Handler;
     sigaction(SIGUSR1, &sa, NULL); // signal() would need to be reinitialised every time due to System V based implementation in Linux, sigaction doesn't
     // Register signal SIGUSR2
-    signal(SIGUSR2, fullServerSignalHandler);
+    signal(SIGUSR2, fullServerSignalHandler); // this signal is run only once so can use simpler signal() instead of sigaction()
     
     
-    pid = getpid();
-    getNumber();
+    pid = getpid(); // get client pid
+    getNumber(); // get number from user
     CLEAR_BUFFER;
     
     /* open the shared memory segment */
     shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
-    if (shm_fd == -1) {
+    if (shm_fd == -1) 
+    {
         perror("unable to open the shared memory segment");
         exit(-1);
     }
     shmPtr = mmap(0, MAX_CLIENTS * sizeof(messageCount) + sizeof(pid_t), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    if (shmPtr == MAP_FAILED) {
+    if (shmPtr == MAP_FAILED) 
+    {
         perror("unable to map the shared memory segment");
         exit(-1);
     }
 
     // Get server PID
     serverPid = *((pid_t*)((void*)shmPtr + MAX_CLIENTS * sizeof(messageCount)));
+#if DEBUG
     printf("Server PID: %d\n", serverPid);
+#endif
 
     // Register with the master
-    registerWithMaster();
+    registerWithServer();
 
-    char command;
+    char command; // command from user
+    // main loop of program
     while(1)
     {
         printf("type \"m\" to send a message or \"q\" to quit\n");
-        scanf("%c", &command);
+        scanf("%c", &command); // get command from user
         if(command == 'm') 
         {
+#if DEBUG
             printf("Invoking sender\n");
-            sendInfoMessage();
+#endif
+            sendInfoMessage(); // send message to server to get info
         }
         else if(command == 'q')
         {
-            exit(0);
+            exit(0); // exit program, performing exit actions
         }
         else
         {
-            printf("Invalid command\n");
+            printf("Invalid command\n"); // try again
         }
         CLEAR_BUFFER;
     }
@@ -96,103 +107,120 @@ int main()
     return 0;
 }
 
+// Function definitions
+
 void getNumber(void)
 {
+    // repeat until correct number entered
     while(number <= 0)
     {
-        printf("Enter a positive number, max 127:\n");
-        if(scanf("%d", (int*)&number) == 0) 
+        printf("Enter a positive number, min 1, max 127:\n");
+        if(scanf("%d", (int*)&number) == 0) // checking if scanf was successful
         {
             printf("Error reading the number, try again\n");
             CLEAR_BUFFER;
             continue;
         }
-        if(number < 0)
+        if(number <= 0) // checking if number is positive and >0
         {
-            printf("The number must be positive, try again\n");
+            printf("The number must be positive and >0, try again\n");
             CLEAR_BUFFER;
         }
     }
+#if DEBUG
     printf("The number is %d\n", number);
+#endif
 }
 
-void registerWithMaster(void) {
-    client s;
+void registerWithServer(void) {
+    client s; // client struct for sending to server
     s.pid = pid;
     s.number = number;
     
-    mq = mq_open(QUEUE_NAME, O_WRONLY, 0666, NULL);
-    if (mq == (mqd_t)-1) {
+    mq = mq_open(QUEUE_NAME, O_WRONLY, 0666, NULL); // open message queue
+    if (mq == (mqd_t)-1) 
+    {
         perror("unable to open the message queue");
         exit(-1);
     }
 
-    if (mq_send(mq, (char*)&s, sizeof(client), 0) == -1) {
+    if (mq_send(mq, (char*)&s, sizeof(client), 0) == -1) // send client struct to server
+
+    {
         perror("unable to send the message");
         exit(-1);
     }
     
 }
 
-void termSignalHandler(int signal) {
+void termSignalHandler(int signal) 
+{
+#if DEBUG
     printf("Received signal %d\n", signal);
+#endif
     exit(0);
 }
 
 void sendInfoMessage(void)
 {
+#if DEBUG
     printf("Sending signal\n");
-    kill(serverPid, SIGUSR1);
+#endif
+    kill(serverPid, SIGUSR1); // send signal to server to request info
 
-    pthread_mutex_lock(&mutex);
+    pthread_mutex_lock(&mutex); // lock mutex so that potential another signal will have to wait during this part before the data is obtained and printed
     while(!ready)
     {
-        pthread_cond_wait(&cond, &mutex);
+        pthread_cond_wait(&cond, &mutex); // wait for server to signal that data is ready to be read
     }
 
     //make sure that the server is not writing to the shared memory at the same time for example for other client
     sem_wait(semaphore);
     if (shmPtr != NULL) {
-        memcpy(clients, shmPtr, MAX_CLIENTS * sizeof(messageCount));
+        memcpy(clients, shmPtr, MAX_CLIENTS * sizeof(messageCount)); // copy data from shared memory to local array
     } else {
         printf("Shared memory pointer is NULL\n");
     }
-    ready = false;
-    sem_post(semaphore);
+    ready = false; // reset ready flag
+    sem_post(semaphore); // release semaphore so server and other clients can access shared memory again
 
-    printClients();
-    pthread_mutex_unlock(&mutex);
+    printClients(); // print received data
+    pthread_mutex_unlock(&mutex); // unlock mutex
 }
 
 void performExit(void)
 {
-    if(!serverFull) // no need to unregister if server is full
+    if(!serverFull) // no need to unregister if server informed it is full
     {
-        fd = open(FIFO_PATH, O_WRONLY);
-        if (fd == -1)
+        // client informs server it's exiting
+        fd = open(FIFO_PATH, O_WRONLY); // open FIFO for writing
+        if (fd == -1) // check if open was successful
         {
             perror("unable to open the FIFO");
+            serverFull = true; // to make sure we won't get infinite loop here
             exit(-1);
         }
-        write(fd, &number, sizeof(int8_t));
-        close(fd);
+        write(fd, &number, sizeof(int8_t)); // write client number to FIFO
+        close(fd); // close FIFO
     }
+    pthread_mutex_destroy(&mutex); // destroy mutex
+    pthread_cond_destroy(&cond); // destroy condition variable
+    mq_close(mq); // close message queue
+    munmap(shmPtr, MAX_CLIENTS * sizeof(messageCount)); // unmap shared memory
+#if DEBUG
     printf("Exiting\n");
-    pthread_mutex_destroy(&mutex);
-    pthread_cond_destroy(&cond);
-    mq_close(mq);
-    munmap(shmPtr, MAX_CLIENTS * sizeof(messageCount));
+#endif
 }
 
 void sigusr1Handler(int signal)
 {
-    pthread_mutex_lock(&mutex);
-    ready = true;
-    pthread_cond_signal(&cond);
-    pthread_mutex_unlock(&mutex);
+    pthread_mutex_lock(&mutex); // lock mutex, so we won't interrupt the process of copying data from shared memory if already working
+    ready = true; // set ready flag
+    pthread_cond_signal(&cond); // signal that data is ready to release waiting thread
+    pthread_mutex_unlock(&mutex); // unlock mutex
 }
 
-void printClients(void)
+void printClients(void) // too obvious to comment :) 
 {
     int i;
     for(i = 0; i < MAX_CLIENTS; i++)
@@ -206,7 +234,7 @@ void printClients(void)
 
 void fullServerSignalHandler(int signal)
 {
-    printf("Server is full\n");
-    serverFull = true;
+    printf("Server is full, exiting\n");
+    serverFull = true; // set flag that server is full
     exit(1);
 }

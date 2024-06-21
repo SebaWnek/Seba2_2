@@ -6,6 +6,7 @@
         "stdlib.h": "c",
         "signal.h": "c",
         "pthread.h": "c",
-        "semaphore.h": "c"
+        "semaphore.h": "c",
+        "fcntl.h": "c"
     }
 }
