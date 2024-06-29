@@ -21,15 +21,31 @@ struct sigaction sa; // struct for signal handling
 int fd; // file descriptor for FIFO
 int shm_fd; // shared memory file descriptor
 void *shmPtr; // shared memory pointer
-messageCount clients[MAX_CLIENTS]; // array of clients for info received from server
+messageCount *clients; // array of clients for info received from server
 bool serverFull = false; // flag for server full
+int maxClients; // max number of clients
 
-int main() 
+bool shouldClose = false;
+int8_t closeChance = 10; // 10% chance to close the client
+
+int main(int argc, char *argv[]) 
 {
+    number = atoi(argv[1]); // get number from argument
+    maxClients = atoi(argv[2]); // get max number of clients from argument
+
+    srand(time(NULL) + number); // seed random number generator
+
+#if DEBUG
+    for(int i = 0; i < argc; i++)
+    {
+        printf("[Client %d] Argument %d: %s\n", number, i, argv[i]); // print arguments
+    }
+#endif
+
     // Register exit function
     if (atexit(performExit) != 0) 
     { 
-        perror("Cannot set exit function\n");
+        fprintf(stderr, "[Client %d] Cannot set exit function\n", number);
         return 1;
     }
     // Initialise mutex and condition variable
@@ -40,7 +56,7 @@ int main()
     semaphore = sem_open(SEM_NAME, 0);
     if (semaphore == SEM_FAILED)
     {
-        perror("unable to create the semaphore");
+        fprintf(stderr, "[Client %d] Unable to create the semaphore", number);
         exit(-1);
     }
 
@@ -54,27 +70,27 @@ int main()
     
     
     pid = getpid(); // get client pid
-    getNumber(); // get number from user
-    CLEAR_BUFFER;
+    ///getNumber(); // get number from user
+    // CLEAR_BUFFER;
     
     /* open the shared memory segment */
     shm_fd = shm_open(SHM_NAME, O_RDWR, 0666);
     if (shm_fd == -1) 
     {
-        perror("unable to open the shared memory segment");
+        fprintf(stderr, "[Client %d] Unable to open the shared memory segment", number);
         exit(-1);
     }
-    shmPtr = mmap(0, MAX_CLIENTS * sizeof(messageCount) + sizeof(pid_t), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    shmPtr = mmap(0, maxClients * sizeof(messageCount) + sizeof(pid_t), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
     if (shmPtr == MAP_FAILED) 
     {
-        perror("unable to map the shared memory segment");
+        fprintf(stderr, "[Client %d] Unable to map the shared memory segment", number);
         exit(-1);
     }
 
     // Get server PID
-    serverPid = *((pid_t*)((void*)shmPtr + MAX_CLIENTS * sizeof(messageCount)));
+    serverPid = *((pid_t*)((void*)shmPtr + maxClients * sizeof(messageCount)));
 #if DEBUG
-    printf("Server PID: %d\n", serverPid);
+    printf("[Client %d] Server PID: %d\n", number, serverPid);
 #endif
 
     // Register with the master
@@ -82,6 +98,21 @@ int main()
 
     char command; // command from user
     // main loop of program
+    
+    int waitTime;
+    while(1)
+    {
+        waitTime = rand() % 5 + 1; // random wait time between 1 and 5 seconds
+        sleep(waitTime); // sleep for random time
+        sendInfoMessage(); // send message to server to get info
+        shouldClose = rand() % 100 < closeChance; // 10% chance to close the client
+        if(shouldClose)
+        {
+            exit(0); // exit program, performing exit actions
+        }
+    }
+    
+    /*
     while(1)
     {
         printf("type \"m\" to send a message or \"q\" to quit\n");
@@ -103,12 +134,14 @@ int main()
         }
         CLEAR_BUFFER;
     }
+    */ 
 
     return 0;
 }
 
 // Function definitions
 
+/*
 void getNumber(void)
 {
     // repeat until correct number entered
@@ -131,6 +164,7 @@ void getNumber(void)
     printf("The number is %d\n", number);
 #endif
 }
+*/
 
 void registerWithServer(void) {
     client s; // client struct for sending to server
@@ -140,14 +174,14 @@ void registerWithServer(void) {
     mq = mq_open(QUEUE_NAME, O_WRONLY, 0666, NULL); // open message queue
     if (mq == (mqd_t)-1) 
     {
-        perror("unable to open the message queue");
+        fprintf(stderr, "[Client %d] Unable to open the message queue", number);
         exit(-1);
     }
 
     if (mq_send(mq, (char*)&s, sizeof(client), 0) == -1) // send client struct to server
 
     {
-        perror("unable to send the message");
+        fprintf(stderr, "[Client %d] Unable to send the message", number);
         exit(-1);
     }
     
@@ -156,7 +190,7 @@ void registerWithServer(void) {
 void termSignalHandler(int signal) 
 {
 #if DEBUG
-    printf("Received signal %d\n", signal);
+    printf("[Client %d] Received signal %d\n", number, signal);
 #endif
     exit(0);
 }
@@ -164,7 +198,7 @@ void termSignalHandler(int signal)
 void sendInfoMessage(void)
 {
 #if DEBUG
-    printf("Sending signal\n");
+    printf("[Client %d] Sending signal\n", number);
 #endif
     kill(serverPid, SIGUSR1); // send signal to server to request info
 
@@ -177,9 +211,9 @@ void sendInfoMessage(void)
     //make sure that the server is not writing to the shared memory at the same time for example for other client
     sem_wait(semaphore);
     if (shmPtr != NULL) {
-        memcpy(clients, shmPtr, MAX_CLIENTS * sizeof(messageCount)); // copy data from shared memory to local array
+        memcpy(clients, shmPtr, maxClients * sizeof(messageCount)); // copy data from shared memory to local array
     } else {
-        printf("Shared memory pointer is NULL\n");
+        printf("[Client %d] Shared memory pointer is NULL\n", number);
     }
     ready = false; // reset ready flag
     sem_post(semaphore); // release semaphore so server and other clients can access shared memory again
@@ -196,7 +230,7 @@ void performExit(void)
         fd = open(FIFO_PATH, O_WRONLY); // open FIFO for writing
         if (fd == -1) // check if open was successful
         {
-            perror("unable to open the FIFO");
+            fprintf(stderr, "[Client %d] Unable to open the FIFO", number);
             serverFull = true; // to make sure we won't get infinite loop here
             exit(-1);
         }
@@ -206,9 +240,9 @@ void performExit(void)
     pthread_mutex_destroy(&mutex); // destroy mutex
     pthread_cond_destroy(&cond); // destroy condition variable
     mq_close(mq); // close message queue
-    munmap(shmPtr, MAX_CLIENTS * sizeof(messageCount)); // unmap shared memory
+    munmap(shmPtr, maxClients * sizeof(messageCount)); // unmap shared memory
 #if DEBUG
-    printf("Exiting\n");
+    printf("[Client %d] Exiting\n", number);
 #endif
 }
 
@@ -223,18 +257,18 @@ void sigusr1Handler(int signal)
 void printClients(void) // too obvious to comment :) 
 {
     int i;
-    for(i = 0; i < MAX_CLIENTS; i++)
+    for(i = 0; i < maxClients; i++)
     {
         if(clients[i].c.number != 0)
         {
-            printf("Client %d: server received %d messages and sent %d messages\n", clients[i].c.number, clients[i].msgReceived, clients[i].msgSent);
+            printf("[Client %d] Client %d: server received %d messages and sent %d messages\n", number, clients[i].c.number, clients[i].msgReceived, clients[i].msgSent);
         }
     }
 }
 
 void fullServerSignalHandler(int signal)
 {
-    printf("Server is full, exiting\n");
+    printf("[Client %d] Server is full, exiting\n", number);
     serverFull = true; // set flag that server is full
     exit(1);
 }

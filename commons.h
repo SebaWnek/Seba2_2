@@ -17,16 +17,16 @@
 #include <unistd.h>
 #include <signal.h>
 
-#define MAX_CLIENTS 3 // max number of clients, only 3 for easier testing
+// #define MAX_CLIENTS 3 // max number of clients, only 3 for easier testing
 #define FIFO_PATH "/tmp/fifo" // path to fifo
 #define QUEUE_NAME "/queue" // message queue name
 #define SHM_NAME "/shm_name" // shared memory name
 #define SEM_NAME "/sem_name" // semaphore name
-#define CLEAR_BUFFER while((tmpChar = getchar()) != '\n' && tmpChar != EOF) // clear buffer macro, to remove input that was left after scanf
+// #define CLEAR_BUFFER while((tmpChar = getchar()) != '\n' && tmpChar != EOF) // clear buffer macro, to remove input that was left after scanf
 
 #define DEBUG 1 // set to 1 to enable debug messages
 
-char tmpChar; // used to clear buffer
+// char tmpChar; // used to clear buffer
 
 //struct for holding and passing info about client
 typedef struct {

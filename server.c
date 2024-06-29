@@ -13,9 +13,11 @@ void sigusr1Handler(int signo, siginfo_t *si, void *data); // signal handler for
 int8_t getNumFromPid(pid_t pid); // get client number from pid
 int getIndexFromNumber(int8_t number); // get index of client with given number
 int getIndexFromPid(pid_t pid); // get index of client with given pid
+void runClients(void); // run clients
 
-messageCount clients[MAX_CLIENTS]; // array of clients data
-int8_t clientsCount = 0; // number of registered clients
+messageCount *clients; // array of clients data
+int8_t clientsCount; // number of registered clients
+int8_t maxClients;
 pthread_t registerThread; // thread for registering clients
 pthread_t fifoThread; // thread for handling FIFO inputs
 pthread_t senderThread; // thread for sending data to clients
@@ -28,11 +30,31 @@ bool signaled = false; // flag for condition variable
 int shm_fd; // shared memory file descriptor
 void *shmPtr; // shared memory pointer
 
-int main() 
-{    
+bool shouldClose = false;
+bool shouldKill = false;
+int8_t closeChance = 2; // 10% chance to close server
+int8_t killChance = 10; // 10% chance to kill the client
+
+int main(int argc, char *argv[]) 
+{   
+    if(argc != 2) // check if there are any arguments
+    {
+        fprintf(stderr, "[Server] Incorrect arguments number\n");
+        return 1;
+    }
+    maxClients = atoi(argv[1]); // get number of clients from argument
+    clients = malloc(maxClients * sizeof(messageCount)); // allocate memory for clients array
+
+#if DEBUG
+    for(int i = 0; i < argc; i++)
+    {
+        printf("[Server] Argument %d: %s\n", i, argv[i]); // print arguments
+    }
+#endif
+
     if (atexit(exitFunc) != 0) // Register exit function
     { 
-        perror("Cannot set exit function\n");
+        perror("[Server] Cannot set exit function\n");
         return 1;
     }
     
@@ -47,17 +69,17 @@ int main()
     int createThreadResult; // variable to store result of creating thread
     createThreadResult = pthread_create(&registerThread, NULL, registerThreadFunc, NULL); // create thread for registering clients
     if (createThreadResult != 0) {
-        fprintf(stderr, "Failed to create thread: %d\n", createThreadResult); // fprintf instead of perror to be able to print custom message
+        fprintf(stderr, "[Server] Failed to create thread: %d\n", createThreadResult); // fprintf instead of perror to be able to print custom message
         exit(EXIT_FAILURE);
     }
     createThreadResult = pthread_create(&fifoThread, NULL, fifoThreadFunc, NULL); // create thread for handling FIFO inputs
     if (createThreadResult != 0) {
-        fprintf(stderr, "Failed to create thread: %d\n", createThreadResult); // fprintf instead of perror to be able to print custom message
+        fprintf(stderr, "[Server] Failed to create thread: %d\n", createThreadResult); // fprintf instead of perror to be able to print custom message
         exit(EXIT_FAILURE);
     }
     createThreadResult = pthread_create(&senderThread, NULL, sendDataThreadFunc, NULL); // create thread for sending data to clients
     if (createThreadResult != 0) {
-        fprintf(stderr, "Failed to create thread: %d\n", createThreadResult); // fprintf instead of perror to be able to print custom message
+        fprintf(stderr, "[Server] Failed to create thread: %d\n", createThreadResult); // fprintf instead of perror to be able to print custom message
         exit(EXIT_FAILURE);
     }
 
@@ -65,25 +87,58 @@ int main()
     int index; // variable to store index of client in clients array
     bool found; // variable to store if client was found
 
-    usleep(100000); // To make sure threads start before next message
+    usleep(100000); // To make sure threads started
 
+    runClients(); // run clients
+
+    usleep(100000); // To make sure clients start
+    
+    srand(time(NULL) - 1); // seed random number generator
+
+    //Main loop
+    while(1)
+    {
+        sleep(rand() % 5 + 1); // sleep for random time between 1 and 5 seconds
+        shouldClose = rand() % 100 < closeChance; // set shouldClose to true with 10% chance
+        if(shouldClose)
+        {
+            exit(0); // exit if shouldClose is true
+        }
+        shouldKill = rand() % 100 < killChance; // set shouldKill to true with 10% chance
+        if(shouldKill)
+        {
+            clientNumber = rand() % maxClients; // get random client number
+            index = getIndexFromNumber(clientNumber); // get index of client with given number
+            if (index == -1) // if client was not found
+            {
+                printf("[Server] Client %d not found\n", clientNumber);
+                continue;
+            }
+            printf("[Server] Killing the client %d\n", clientNumber);
+            kill(clients[index].c.pid, SIGTERM); // send SIGTERM to client
+            shouldKill = false; // reset shouldKill
+        }
+    }
+
+/*
     // Main loop
     while(1)
     {
         clientNumber = 0; // reset client number
-        printf("Enter the client number or \"-2\" to exit:\n");
+        printf("[Server] Enter the client number or \"-2\" to exit:\n");
         scanf("%d", (int*)&clientNumber); // get client number from user
         if (clientNumber == -2) exit(0); // exit if -2 entered
         if (clientNumber == 0) continue; // 0 is not allowed as number, for some reason signal handler causes scanf to run forward, so to avoid empty input
         index = getIndexFromNumber(clientNumber); // get index of client with given number
         if (index == -1) // if client was not found
         {
-            printf("Client %d not found\n", clientNumber);
+            printf("[Server] Client %d not found\n", clientNumber);
             continue;
         }
-        printf("Closing the client %d\n", clientNumber);
+        printf("[Server] Closing the client %d\n", clientNumber);
         kill(clients[index].c.pid, SIGTERM); // send SIGTERM to client
     }
+*/
 
     return 0;
 }
@@ -91,7 +146,7 @@ int main()
 void* registerThreadFunc(void* arg) 
 {
 #if DEBUG
-    printf("Register thread started\n");
+    printf("[Server] Register thread started\n");
 #endif
     struct mq_attr attr; // message queue attributes
     attr.mq_flags = 0; // flags
@@ -105,7 +160,7 @@ void* registerThreadFunc(void* arg)
 
     if (mq == (mqd_t)-1) // check if message queue was created
     {
-        perror("unable to create the message queue");
+        perror("[Server] unable to create the message queue");
         exit(-1);
     }
 
@@ -113,25 +168,25 @@ void* registerThreadFunc(void* arg)
     while (1)
     {
 #if DEBUG
-        printf("Waiting for the clients to register, currently %d registered\n", clientsCount);
+        printf("[Server] Waiting for the clients to register, currently %d registered\n", clientsCount);
 #endif
         if (mq_receive(mq, (char *)tmp, sizeof(client), NULL) == -1) // receive message from message queue
         {
-            perror("unable to receive the message");
+            perror("[Server] unable to receive the message");
             exit(-1);
         }
-        if (clientsCount < MAX_CLIENTS) // if there is still space for new client
+        if (clientsCount < maxClients) // if there is still space for new client
         {
             clients[clientsCount].c.number = tmp->number; // copy client number to clients array
             clients[clientsCount].c.pid = tmp->pid; // copy client pid to clients array
             clients[clientsCount].msgReceived = 1; // set number of messages received to 1
             clients[clientsCount].msgSent = 0; // set number of messages sent to 0
             clientsCount++; // increment number of registered clients
-            printf("Client registered with number %d, pid: %d\n", tmp->number, tmp->pid);
+            printf("[Server] Client registered with number %d, pid: %d\n", tmp->number, tmp->pid);
         }
         else // if server is full
         {
-            printf("The server is full\n");
+            printf("[Server] The server is full\n");
             kill(tmp->pid, SIGUSR2); // Send SIGUSR2 to the client that cannot register
         }
     }
@@ -143,7 +198,7 @@ void unregisterClient(int8_t number)
     int j, index = getIndexFromNumber(number); // get index of client with given number
     if (index == -1) // if client was not found
     {
-        printf("Client %d not found\n", number);
+        printf("[Server] Client %d not found\n", number);
         return;
     }
 
@@ -165,7 +220,7 @@ void unregisterClient(int8_t number)
 void* fifoThreadFunc(void* arg)
 {
 #if DEBUG
-    printf("Fifo thread started\n");
+    printf("[Server] Fifo thread started\n");
 #endif
 
     unlink(FIFO_PATH); //remove fifo file if already exists for any reason (i.e. previous run of the program closed unexpectedly without removing it)
@@ -173,7 +228,7 @@ void* fifoThreadFunc(void* arg)
     semaphore = sem_open(SEM_NAME, O_CREAT, 0666, 1); // create semaphore
     if (semaphore == SEM_FAILED) // check if semaphore was created
     {
-        perror("unable to create the semaphore");
+        perror("[Server] Unable to create the semaphore");
         exit(-1);
     }
 
@@ -181,32 +236,32 @@ void* fifoThreadFunc(void* arg)
     shm_fd = shm_open(SHM_NAME, O_CREAT | O_RDWR, 0666);
     if (shm_fd == -1) 
     {
-        perror("unable to create the shared memory segment");
+        perror("[Server] Unable to create the shared memory segment");
         exit(-1);
     }
-    ftruncate(shm_fd, MAX_CLIENTS * sizeof(messageCount) + sizeof(pid_t)); // set size of shared memory segment
-    shmPtr = mmap(0, MAX_CLIENTS * sizeof(messageCount) + sizeof(pid_t), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0); // map shared memory segment
+    ftruncate(shm_fd, maxClients * sizeof(messageCount) + sizeof(pid_t)); // set size of shared memory segment
+    shmPtr = mmap(0, maxClients * sizeof(messageCount) + sizeof(pid_t), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0); // map shared memory segment
     if (shmPtr == MAP_FAILED) 
     {
-        perror("unable to map the shared memory segment");
+        perror("[Server] Unable to map the shared memory segment");
         exit(-1);
     }
 
     // Write server PID at the end of shared memory segment
-    pid_t *pid = (pid_t*)((void*)shmPtr + MAX_CLIENTS * sizeof(messageCount));
+    pid_t *pid = (pid_t*)((void*)shmPtr + maxClients * sizeof(messageCount));
     *pid = getpid();
 
     // Create the FIFO if it doesn't exist
     if (mkfifo(FIFO_PATH, 0666) == -1) 
     {
-        perror("unable to create the FIFO");
+        perror("[Server] Unable to create the FIFO");
         exit(-1);
     }
 
     // Open the FIFO
     int fd = open(FIFO_PATH, O_RDONLY);
     if (fd == -1) {
-        perror("unable to open the FIFO");
+        perror("[Server] Unable to open the FIFO");
         exit(-1);
     }
 
@@ -217,11 +272,11 @@ void* fifoThreadFunc(void* arg)
     {
         if (read(fd, &number, sizeof(int8_t)) == -1) 
         {
-            perror("unable to read from the FIFO");
+            perror("[Server] Unable to read from the FIFO");
             exit(-1);
         }
 
-        printf("Unregistering client %d\n", number);
+        printf("[Server] Unregistering client %d\n", number);
         unregisterClient(number); // unregister client with given number
 
         // Reinitialize the FIFO, otherwise we would read the same data indefinitely in a loop
@@ -229,12 +284,12 @@ void* fifoThreadFunc(void* arg)
         unlink(FIFO_PATH); // remove the FIFO
         if (mkfifo(FIFO_PATH, 0666) == -1) // recreate the FIFO
         {
-            perror("unable to recreate the FIFO");
+            perror("[Server] Unable to recreate the FIFO");
             exit(-1);
         }
         fd = open(FIFO_PATH, O_RDONLY); // open the FIFO to read again from another client
         if (fd == -1) {
-            perror("unable to open the FIFO");
+            perror("[Server] Unable to open the FIFO");
             exit(-1);
         }
     }
@@ -255,8 +310,8 @@ void exitFunc(void)
 
 void sendData(pid_t requester)
 {
-    sem_wait(semaphore); // wait for semaphore to make sure any client is not reading so we wom't corrupt data during that time
-    memcpy(shmPtr, clients, MAX_CLIENTS * sizeof(messageCount)); // copy data to shared memory
+    sem_wait(semaphore); // wait for semaphore to make sure any client is not reading so we won't corrupt data during that time
+    memcpy(shmPtr, clients, maxClients * sizeof(messageCount)); // copy data to shared memory
 
     kill(requester, SIGUSR1); // send signal to requester to inform data is ready to be read
 
@@ -268,7 +323,7 @@ void sendData(pid_t requester)
 void* sendDataThreadFunc(void* arg)
 {
 #if DEBUG
-    printf("Sender thread started\n");
+    printf("[Server] Sender thread started\n");
 #endif
 
     // main loop of thread
@@ -277,8 +332,12 @@ void* sendDataThreadFunc(void* arg)
         pthread_mutex_lock(&mutex); // lock mutex so only one signal can be processed at a time
         while (!signaled)
         {
+            printf("waiting");
             pthread_cond_wait(&cond, &mutex); // wait for signal and condition variable so signal handler can finish before we process the data
+            printf("checking %d", signaled);
         }
+        
+        printf("dupa");
         signaled = false; // reset signaled flag for next read
         sendData(requesterPid); // send data to client with given pid
         clients[getIndexFromPid(requesterPid)].msgSent++; // increment number of messages sent
@@ -294,11 +353,15 @@ void sigusr1Handler(int signo, siginfo_t *si, void *data)
     requesterPid = si->si_pid; // get pid of client that requested data
     index = getIndexFromPid(requesterPid); // get index of client with given pid
 #if DEBUG
-    printf("Data requested by %d\n", clients[index].c.number);
+    //printf("[Server] Data requested by %d\n", clients[index].c.number);
 #endif
+        //printf("dupa0");
     clients[index].msgReceived++; // increment number of messages received
+        //printf("dupa1");
     pthread_cond_signal(&cond); // signal condition variable to release waiting thread
+        //printf("dupa2");
     pthread_mutex_unlock(&mutex); // unlock mutex so next signal can be processed
+        //printf("dupa3");
 }
 
 int8_t getNumFromPid(pid_t pid)
@@ -335,4 +398,32 @@ int getIndexFromPid(pid_t pid)
         }
     }
     return -1;
+}
+
+void runClients(void)
+{
+    pid_t id; // variable to store client pid
+    char *idStr; // variable to store client human-friendly number
+    char *clientsCountStr; // variable to store maxClients
+
+    clientsCountStr = malloc(4); // allocate memory for clientsCountStr, 3 characters + null terminator
+    sprintf(clientsCountStr, "%d", maxClients); // convert maxClients to string
+
+    idStr = malloc(4); // allocate memory for idStr, 3 characters + null terminator
+    for (int i = 0; i < maxClients; i++)
+    {
+        sprintf(idStr, "%d", i + 1); // convert i to string
+        if (id = fork() == 0)
+        {
+            printf("[Server] Starting client %s\n", idStr);
+            execl("./client", "./client", idStr, clientsCountStr, NULL); // run client instead of server
+            if (id == -1) // check if fork was successful
+            {
+                perror("Cannot fork\n");
+                return;
+            }
+        }
+    }
+    free(idStr); // deallocate memory for idStr
+    free(clientsCountStr); // deallocate memory for clientsCountStr
 }
