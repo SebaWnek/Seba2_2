@@ -87,6 +87,8 @@ int main(int argc, char *argv[])
         exit(-1);
     }
 
+    clients = (messageCount*)malloc(maxClients * sizeof(messageCount)); // allocate memory for clients array
+
     // Get server PID
     serverPid = *((pid_t*)((void*)shmPtr + maxClients * sizeof(messageCount)));
 #if DEBUG
@@ -108,6 +110,7 @@ int main(int argc, char *argv[])
         shouldClose = rand() % 100 < closeChance; // 10% chance to close the client
         if(shouldClose)
         {
+            printf("[Client %d] Exiting\n", number);
             exit(0); // exit program, performing exit actions
         }
     }
@@ -209,15 +212,17 @@ void sendInfoMessage(void)
     }
 
     //make sure that the server is not writing to the shared memory at the same time for example for other client
-    sem_wait(semaphore);
-    if (shmPtr != NULL) {
+    sem_wait(semaphore); // wait for semaphore to be released
+    if (shmPtr != NULL) 
+    {
         memcpy(clients, shmPtr, maxClients * sizeof(messageCount)); // copy data from shared memory to local array
-    } else {
+    } 
+    else 
+    {
         printf("[Client %d] Shared memory pointer is NULL\n", number);
     }
     ready = false; // reset ready flag
     sem_post(semaphore); // release semaphore so server and other clients can access shared memory again
-
     printClients(); // print received data
     pthread_mutex_unlock(&mutex); // unlock mutex
 }
@@ -230,7 +235,7 @@ void performExit(void)
         fd = open(FIFO_PATH, O_WRONLY); // open FIFO for writing
         if (fd == -1) // check if open was successful
         {
-            fprintf(stderr, "[Client %d] Unable to open the FIFO", number);
+            fprintf(stderr, "[Client %d] Unable to open the FIFO, check if server running", number);
             serverFull = true; // to make sure we won't get infinite loop here
             exit(-1);
         }
@@ -248,6 +253,7 @@ void performExit(void)
 
 void sigusr1Handler(int signal)
 {
+    printf("[Client %d] Received signal %d\n", number, signal);
     pthread_mutex_lock(&mutex); // lock mutex, so we won't interrupt the process of copying data from shared memory if already working
     ready = true; // set ready flag
     pthread_cond_signal(&cond); // signal that data is ready to release waiting thread

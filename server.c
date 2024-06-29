@@ -102,12 +102,13 @@ int main(int argc, char *argv[])
         shouldClose = rand() % 100 < closeChance; // set shouldClose to true with 10% chance
         if(shouldClose)
         {
+            printf("[Server] Closing the server\n");
             exit(0); // exit if shouldClose is true
         }
         shouldKill = rand() % 100 < killChance; // set shouldKill to true with 10% chance
         if(shouldKill)
         {
-            clientNumber = rand() % maxClients; // get random client number
+            clientNumber = rand() % maxClients + 1; // get random client number
             index = getIndexFromNumber(clientNumber); // get index of client with given number
             if (index == -1) // if client was not found
             {
@@ -312,9 +313,7 @@ void sendData(pid_t requester)
 {
     sem_wait(semaphore); // wait for semaphore to make sure any client is not reading so we won't corrupt data during that time
     memcpy(shmPtr, clients, maxClients * sizeof(messageCount)); // copy data to shared memory
-
     kill(requester, SIGUSR1); // send signal to requester to inform data is ready to be read
-
     // Releasing after sending the signal to minimise chance of race conditions, as requestor client should be already waiting for this semaphore
     // so no other will have chance to initiate this process before it will finish copying
     sem_post(semaphore); 
@@ -332,12 +331,9 @@ void* sendDataThreadFunc(void* arg)
         pthread_mutex_lock(&mutex); // lock mutex so only one signal can be processed at a time
         while (!signaled)
         {
-            printf("waiting");
             pthread_cond_wait(&cond, &mutex); // wait for signal and condition variable so signal handler can finish before we process the data
-            printf("checking %d", signaled);
         }
         
-        printf("dupa");
         signaled = false; // reset signaled flag for next read
         sendData(requesterPid); // send data to client with given pid
         clients[getIndexFromPid(requesterPid)].msgSent++; // increment number of messages sent
@@ -353,15 +349,11 @@ void sigusr1Handler(int signo, siginfo_t *si, void *data)
     requesterPid = si->si_pid; // get pid of client that requested data
     index = getIndexFromPid(requesterPid); // get index of client with given pid
 #if DEBUG
-    //printf("[Server] Data requested by %d\n", clients[index].c.number);
+    printf("[Server] Data requested by %d\n", clients[index].c.number);
 #endif
-        //printf("dupa0");
     clients[index].msgReceived++; // increment number of messages received
-        //printf("dupa1");
     pthread_cond_signal(&cond); // signal condition variable to release waiting thread
-        //printf("dupa2");
     pthread_mutex_unlock(&mutex); // unlock mutex so next signal can be processed
-        //printf("dupa3");
 }
 
 int8_t getNumFromPid(pid_t pid)
