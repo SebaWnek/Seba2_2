@@ -104,8 +104,8 @@ int main(int argc, char *argv[])
     int waitTime;
     while(1)
     {
-        waitTime = rand() % 5 + 1; // random wait time between 1 and 5 seconds
-        sleep(waitTime); // sleep for random time
+        waitTime = rand() % 5000000 + 1; // random wait time between 1 and 5 seconds
+        usleep(waitTime); // sleep for random time
         sendInfoMessage(); // send message to master to get info
         shouldClose = rand() % 100 < closeChance; // 10% chance to close the slave
         if(shouldClose)
@@ -235,13 +235,14 @@ void performExit(void)
         fd = open(FIFO_PATH, O_WRONLY); // open FIFO for writing
         if (fd == -1) // check if open was successful
         {
-            fprintf(stderr, "[Slave %d] Unable to open the FIFO, check if master running", number);
+            fprintf(stderr, "[Slave %d] Unable to open the FIFO, check if master running\n", number);
             masterFull = true; // to make sure we won't get infinite loop here
             exit(-1);
         }
         write(fd, &number, sizeof(int8_t)); // write slave number to FIFO
         close(fd); // close FIFO
     }
+    free(slaves); // free memory allocated for slaves array
     pthread_mutex_destroy(&mutex); // destroy mutex
     pthread_cond_destroy(&cond); // destroy condition variable
     mq_close(mq); // close message queue
@@ -262,6 +263,7 @@ void sigusr1Handler(int signal)
 
 void printSlaves(void) // too obvious to comment :)
 {
+    printf("[Slave %d] PID: %d\n", number, pid);
     int i;
     for(i = 0; i < maxSlaves; i++)
     {

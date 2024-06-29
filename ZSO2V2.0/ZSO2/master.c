@@ -10,6 +10,7 @@ void unregisterSlave(int8_t number); // unregister slave with given number
 void exitFunc(void); // function to perform exit actions
 void sendData(pid_t requester); // send data to slave with given pid
 void sigusr1Handler(int signo, siginfo_t *si, void *data); // signal handler for SIGUSR1
+void sigTermHandler(int signo, siginfo_t *si, void *data); // signal handler for SIGTERM
 int8_t getNumFromPid(pid_t pid); // get slave number from pid
 int getIndexFromNumber(int8_t number); // get index of slave with given number
 int getIndexFromPid(pid_t pid); // get index of slave with given pid
@@ -26,6 +27,7 @@ pthread_mutex_t mutex; // mutex for synchronisation
 pthread_cond_t cond; // condition variable for synchronisation
 pid_t requesterPid; // pid of slave that requested data
 struct sigaction sa; // struct for signal handling containing sigusr1Handler and settings
+struct sigaction saTerm; // struct for signal handling containing sigusr2Handler and settings
 bool signaled = false; // flag for condition variable
 int shm_fd; // shared memory file descriptor
 void *shmPtr; // shared memory pointer
@@ -61,7 +63,11 @@ int main(int argc, char *argv[])
     sa.sa_flags = SA_SIGINFO; // set flag for sigaction to use sa_sigaction instead of sa_handler and obtain more info about signal
     sa.sa_sigaction = sigusr1Handler; // set signal handler to sigusr1Handler
 
+    saTerm.sa_flags = SA_SIGINFO; // set flag for sigaction to use sa_sigaction instead of sa_handler and obtain more info about signal
+    saTerm.sa_sigaction = sigTermHandler; // set signal handler to sigTermHandler
+
     sigaction(SIGUSR1, &sa, NULL); // register signal SIGUSR1
+    sigaction(SIGTERM, &saTerm, NULL); // register signal SIGTERM
 
     pthread_mutex_init(&mutex, NULL); // Initialise mutex
     pthread_cond_init(&cond, NULL); // Initialise condition variable
@@ -83,7 +89,6 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    int8_t slaveNumber; // variable to store slave number
     int index; // variable to store index of slave in slaves array
     bool found; // variable to store if slave was found
 
@@ -108,15 +113,13 @@ int main(int argc, char *argv[])
         shouldKill = rand() % 100 < killChance; // set shouldKill to true with 10% chance
         if(shouldKill)
         {
-            slaveNumber = rand() % maxSlaves + 1; // get random slave number
-            index = getIndexFromNumber(slaveNumber); // get index of slave with given number
-            if (index == -1) // if slave was not found
-            {
-                printf("[Master] Slave %d not found\n", slaveNumber);
-                continue;
-            }
-            printf("[Master] Killing the slave %d\n", slaveNumber);
+            index = rand() % slavesCount; // get random slave index
+            printf("[Master] Killing the slave %d\n", slaves[index].s.number);
+            
+            pthread_mutex_lock(&mutex); // lock mutex so only one signal can be processed at a time
             kill(slaves[index].s.pid, SIGTERM); // send SIGTERM to slave
+            pthread_mutex_unlock(&mutex); // unlock mutex so next signal can be processed
+
             shouldKill = false; // reset shouldKill
         }
     }
@@ -178,11 +181,13 @@ void* registerThreadFunc(void* arg)
         }
         if (slavesCount < maxSlaves) // if there is still space for new slave
         {
+            pthread_mutex_lock(&mutex); // lock mutex so only one signal can be processed at a time
             slaves[slavesCount].s.number = tmp->number; // copy slave number to slaves array
             slaves[slavesCount].s.pid = tmp->pid; // copy slave pid to slaves array
             slaves[slavesCount].msgReceived = 1; // set number of messages received to 1
             slaves[slavesCount].msgSent = 0; // set number of messages sent to 0
             slavesCount++; // increment number of registered slaves
+            pthread_mutex_unlock(&mutex); // unlock mutex so next signal can be processed
             printf("[Master] Slave registered with number %d, pid: %d\n", tmp->number, tmp->pid);
         }
         else // if master is full
@@ -196,6 +201,7 @@ void* registerThreadFunc(void* arg)
 
 void unregisterSlave(int8_t number)
 {
+    pthread_mutex_lock(&mutex); // lock mutex so only one signal can be processed at a time
     int j, index = getIndexFromNumber(number); // get index of slave with given number
     if (index == -1) // if slave was not found
     {
@@ -216,6 +222,7 @@ void unregisterSlave(int8_t number)
     slaves[slavesCount].s.pid = 0;
     slaves[slavesCount].msgReceived = 0;
     slaves[slavesCount].msgSent = 0;
+    pthread_mutex_unlock(&mutex); // unlock mutex so next signal can be processed
 }
 
 void* fifoThreadFunc(void* arg)
@@ -306,6 +313,7 @@ void exitFunc(void)
     unlink(FIFO_PATH); // remove FIFO
     shm_unlink(SHM_NAME); // remove shared memory
     sem_unlink(SEM_NAME); // remove semaphore
+    free(slaves); // deallocate memory for slaves array
 }
 
 
@@ -418,4 +426,10 @@ void runSlaves(void)
     }
     free(idStr); // deallocate memory for idStr
     free(slavesCountStr); // deallocate memory for slavesCountStr
+}
+
+void sigTermHandler(int signo, siginfo_t *si, void *data)
+{
+    printf("[Master] Received SIGTERM from: %d, error: %d, syscall: %d \n", si->si_pid, si->si_errno, si->si_syscall);
+    exit(0);
 }
